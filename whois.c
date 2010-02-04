@@ -69,6 +69,7 @@ static const struct option longopts[] = {
     {"server",	required_argument,	NULL, 'h'},
     {"host",	required_argument,	NULL, 'h'},
     {"port",	required_argument,	NULL, 'p'},
+    {"address",	required_argument,	NULL, 3  },
     {NULL,	0,			NULL, 0  }
 };
 #else
@@ -79,7 +80,7 @@ extern int optind;
 int main(int argc, char *argv[])
 {
     int ch, nopar = 0, fstringlen = 64;
-    const char *server = NULL, *port = NULL;
+    const char *server = NULL, *port = NULL, *address = NULL;
     char *qstring, *fstring;
 
 #ifdef ENABLE_NLS
@@ -128,6 +129,9 @@ int main(int argc, char *argv[])
 	    break;
 	case 'p':
 	    port = strdup(optarg);
+	    break;
+	case 3:
+	    address = strdup(optarg);
 	    break;
 	case 2:
 	    verb = 1;
@@ -194,7 +198,7 @@ int main(int argc, char *argv[])
     if (!server)
 	server = guess_server(qstring);
 
-    handle_query(server, port, qstring, fstring);
+    handle_query(server, port, qstring, fstring, address);
 
     exit(0);
 }
@@ -205,7 +209,7 @@ int main(int argc, char *argv[])
  * This function has multiple memory leaks.
  */
 void handle_query(const char *hserver, const char *hport,
-	const char *query, const char *flags)
+	const char *query, const char *flags, const char *address)
 {
     const char *server = NULL, *port = NULL;
     char *p, *query_string;
@@ -241,20 +245,20 @@ void handle_query(const char *hserver, const char *hport,
 	case 4:
 	    if (verb)
 		printf(_("Using server %s.\n"), server + 1);
-	    sockfd = openconn(server + 1, NULL);
+	    sockfd = openconn(server + 1, NULL, address);
 	    server = query_crsnic(sockfd, query);
 	    break;
 	case 7:
 	    if (verb)
 		printf(_("Using server %s.\n"),
 			"whois.publicinterestregistry.net");
-	    sockfd = openconn("whois.publicinterestregistry.net", NULL);
+	    sockfd = openconn("whois.publicinterestregistry.net", NULL, address);
 	    server = query_pir(sockfd, query);
 	    break;
 	case 8:
 	    if (verb)
 		printf(_("Using server %s.\n"), "whois.afilias-grs.info");
-	    sockfd = openconn("whois.afilias-grs.info", NULL);
+	    sockfd = openconn("whois.afilias-grs.info", NULL, address);
 	    server = query_afilias(sockfd, query);
 	    break;
 	case 0x0A:
@@ -287,7 +291,7 @@ void handle_query(const char *hserver, const char *hport,
 	printf(_("Query string: \"%s\"\n\n"), query_string);
     }
 
-    sockfd = openconn(server, port);
+    sockfd = openconn(server, port, address);
 
     server = do_query(sockfd, query_string);
     free(query_string);
@@ -295,7 +299,7 @@ void handle_query(const char *hserver, const char *hport,
     /* recursion is fun */
     if (server) {
 	printf(_("\n\nFound a referral to %s.\n\n"), server);
-	handle_query(server, NULL, query, flags);
+	handle_query(server, NULL, query, flags, address);
     }
 
     return;
@@ -809,7 +813,7 @@ const char *query_afilias(const int sock, const char *query)
     return referral_server;
 }
 
-int openconn(const char *server, const char *port)
+int openconn(const char *server, const char *port, const char *address)
 {
     int fd = -1;
     int timeout = 10;
@@ -821,6 +825,14 @@ int openconn(const char *server, const char *port)
     struct servent *servinfo;
     struct sockaddr_in saddr;
 #endif
+    struct sockaddr_in lsaddr;
+    if (address != NULL) {
+	lsaddr.sin_family = AF_INET;
+	lsaddr.sin_port = htons(0);
+	struct in_addr ipv4laddr;
+	inet_pton(AF_INET, address, &ipv4laddr);
+	lsaddr.sin_addr = ipv4laddr;
+    }
 
     alarm(60);
 
@@ -844,6 +856,9 @@ int openconn(const char *server, const char *port)
 	    timeout = 0;
 	if ((fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol)) < 0)
 	    continue;		/* ignore */
+	if (address != NULL &&
+	    bind(fd, (struct sockaddr *)&lsaddr, sizeof lsaddr) < 0)
+	    err_sys("Can't bind source address %s", address);
 	if (connect_with_timeout(fd, (struct sockaddr *)ai->ai_addr,
 		    ai->ai_addrlen, timeout) == 0)
 	    break;		/* success */
@@ -858,6 +873,9 @@ int openconn(const char *server, const char *port)
 	err_quit(_("Host %s not found."), server);
     if ((fd = socket(PF_INET, SOCK_STREAM, IPPROTO_IP)) < 0)
 	err_sys("socket");
+    if (address != NULL &&
+	bind(fd, (struct sockaddr *)&lsaddr, sizeof lsaddr) < 0)
+	err_sys("Can't bind source address %s", address);
     memset(&saddr, 0, sizeof(saddr));
     saddr.sin_addr = *(struct in_addr *) hostinfo->h_addr;
     saddr.sin_family = AF_INET;
@@ -1196,6 +1214,7 @@ void usage(void)
 "-h HOST                connect to server HOST\n"
 "-p PORT                connect to PORT\n"
 "-H                     hide legal disclaimers\n"
+"      --address        set source address to specified interface address\n"
 "      --verbose        explain what is being done\n"
 "      --help           display this help and exit\n"
 "      --version        output version information and exit\n"
